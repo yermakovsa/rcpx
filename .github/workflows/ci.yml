@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: gofmt + test + vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Keep the build deterministic: fail if commands would modify go.mod/go.sum.
+    env:
+      GOFLAGS: -mod=readonly
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt check
+        run: |
+          bad=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$bad" ]; then
+            echo "gofmt needed on:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: go vet
+        run: go vet ./...
