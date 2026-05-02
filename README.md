@@ -1,6 +1,6 @@
 # rcpx
 
-rcpx is a Go library that provides an HTTP JSON-RPC failover `http.RoundTripper`.
+rcpx is a small Go library that provides an HTTP JSON-RPC failover `http.RoundTripper`, mainly for Go applications using clients such as `go-ethereum/rpc` and `ethclient`.
 
 Configure an `http.Client` to use rcpx as its transport. For each request, rcpx tries upstream URLs in priority order until one succeeds, based on a retry policy and safety rails.
 
@@ -9,11 +9,12 @@ Configure an `http.Client` to use rcpx as its transport. For each request, rcpx 
 * Tries upstreams sequentially, in priority order.
 * Tries each eligible upstream at most once per request.
 * By default, continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
-* Treats HTTP statuses other than 429/502/503/504 as success and returns them unchanged (even if non-2xx)
+* Treats HTTP statuses other than `429`, `502`, `503`, `504` as success and returns them unchanged, even if non-2xx.
+* Does not inspect JSON-RPC response bodies; HTTP `200` with a JSON-RPC error body is returned unchanged.
 * If the request context is canceled or deadline exceeded, returns immediately and does not consult the retry policy.
-* Buffers the request body once per request so it can resend it across upstreams (capped by `BodyBufferBytes`).
-* Cooldown is enabled by default and can temporarily skip upstreams after consecutive failures.
-* By default, does not retry or fail over non-idempotent JSON-RPC methods (see `AllowNonIdempotent`).
+* Buffers the request body once per request so it can resend it across upstreams, capped by `BodyBufferBytes`.
+* Cooldown is enabled by default and can temporarily skip upstreams after consecutive failover-causing failures.
+* By default, does not retry or fail over non-idempotent JSON-RPC methods such as `eth_sendRawTransaction` and `eth_sendTransaction`.
 
 ## API at a glance
 
@@ -21,9 +22,26 @@ Configure an `http.Client` to use rcpx as its transport. For each request, rcpx 
 
 ## When to use rcpx
 
-Use rcpx if you have multiple HTTP JSON-RPC endpoints and want in-process sequential failover (for example, primary + backup RPC providers).
+Use rcpx if you have multiple HTTP JSON-RPC endpoints and want in-process sequential failover, for example a primary RPC provider plus one or more backup providers.
+
+rcpx is most useful when upstreams have a clear priority order and you want explicit failover behavior rather than load balancing.
 
 Do not use rcpx if you need per-upstream auth headers, WebSocket subscriptions, quorum/hedged requests, or gateway/proxy features. rcpx is an HTTP `RoundTripper` and routes each request to one upstream at a time.
+
+## What rcpx does not guarantee
+
+rcpx operates at the HTTP request level. It does not validate Ethereum state, compare providers, or coordinate multiple RPC calls that are part of one larger application operation.
+
+In particular, rcpx does not guarantee that:
+
+* all providers are at the same block height;
+* providers have the same pending state or mempool view;
+* nonce queries are consistent across providers;
+* transaction lookups are visible across providers immediately;
+* a sequence of separate RPC calls reads from the same provider;
+* HTTP `200` responses contain fresh, correct, or globally consistent JSON-RPC data.
+
+For state-sensitive workflows, pin the logical operation to one provider where possible, and use explicit block numbers or block hashes when the RPC method supports them.
 
 ## Constraints and non-goals
 
@@ -31,6 +49,8 @@ Do not use rcpx if you need per-upstream auth headers, WebSocket subscriptions, 
 * Per-upstream header customization is not supported.
 * Upstreams are full target URLs; requests are sent to that exact URL (no path joining).
 * The returned transport is safe for concurrent use; concurrency characteristics also depend on the provided base transport.
+* rcpx does not inspect JSON-RPC response bodies or provide Ethereum provider consistency guarantees.
+* rcpx is not a proxy, gateway, hosted service, WebSocket layer, load balancer, quorum requester, hedged requester, transaction manager, nonce manager, or provider consistency layer.
 
 ## Installation
 
@@ -186,6 +206,18 @@ func main() {
 
 rcpx is configured via `rcpx.Config`.
 
+Default behavior summary:
+
+| Setting | Default |
+|---|---|
+| Retryable HTTP statuses | `429`, `502`, `503`, `504` |
+| Body buffer cap | `rcpx.DefaultBodyBufferBytes` (`1 MiB`) |
+| Cooldown | Enabled |
+| Cooldown threshold | `rcpx.DefaultCooldownFailAfterConsecutive` (`3`) consecutive failover-causing failures |
+| Cooldown duration | `rcpx.DefaultCooldownDuration` (`30s`) |
+| Non-idempotent failover | Disabled |
+| Base transport | `http.DefaultTransport` |
+
 ### How failover works
 
 * Upstreams are tried sequentially, in priority order.
@@ -193,7 +225,21 @@ rcpx is configured via `rcpx.Config`.
 * By default, rcpx continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
 * An attempt succeeds when `err == nil` and the status code is not `429`, `502`, `503`, or `504`.
 * Other HTTP status codes are treated as success from rcpx's perspective and returned unchanged.
+* JSON-RPC response bodies are not inspected. A JSON-RPC error returned with HTTP `200` is returned unchanged.
 * If the request context is canceled or deadline exceeded, rcpx returns immediately and does not consult the retry policy.
+
+Default failover decision summary:
+
+| Outcome | Default rcpx behavior |
+|---|---|
+| Transport error | Try next eligible upstream |
+| HTTP `429`, `502`, `503`, `504` | Try next eligible upstream |
+| HTTP `500` | Return unchanged |
+| Other non-retryable HTTP status | Return unchanged |
+| HTTP `200` with JSON-RPC error body | Return unchanged |
+| Context canceled or deadline exceeded | Return immediately |
+| Retryable failure for `eth_sendRawTransaction` or `eth_sendTransaction` | Block failover by default |
+| All upstreams cooling down | Return `*rcpx.AllUpstreamsFailedError` with `Attempted == 0` |
 
 ### Upstreams
 
@@ -247,7 +293,17 @@ You can override the default retry or failover behavior with `Config.RetryPolicy
 
 `RetryableByDefault` is true for transport errors (`Err != nil`) and for HTTP status `429`, `502`, `503`, `504`.
 
-Because the policy is only consulted on non-success attempts, it cannot make additional HTTP status codes (for example, 500) retryable.
+The retry policy is only consulted after rcpx has classified an attempt as non-success and there is another eligible upstream to try.
+
+The retry policy is not called:
+
+* on successful attempts;
+* for the last eligible upstream;
+* when the request context is canceled or its deadline is exceeded.
+
+Because HTTP statuses other than `429`, `502`, `503`, and `504` are treated as success from rcpx's perspective, `RetryPolicy` cannot make additional HTTP status codes, such as `500`, retryable under the current design.
+
+`RetryPolicy` receives `AttemptOutcome`; it cannot inspect response bodies or response headers. It can decide whether rcpx should continue after an already-classified non-success attempt, but it is not a general response validation hook.
 
 ### Request body buffering cap
 
@@ -264,6 +320,12 @@ rcpx buffers the request body once per request so it can resend it across upstre
 * `BodyBufferBytes < 0` is invalid and causes `NewRoundTripper` to return an error.
 * If the request body exceeds the cap, the request fails with `rcpx.ErrBodyTooLarge`.
 * If the request body cannot be read, the request fails with an error that joins `rcpx.ErrBodyUnreadable` with the underlying read error.
+
+rcpx reads and closes the original request body while buffering it. For each upstream attempt, rcpx sends a cloned request with a fresh reader over the buffered body.
+
+If an attempt receives a response but rcpx decides to fail over, rcpx closes that failed attempt's response body before trying the next upstream.
+
+If rcpx returns a response to the caller, the caller owns that response and must close `resp.Body` as usual.
 
 ### Cooldown
 
@@ -298,6 +360,8 @@ Configuration:
   * `Duration == 0` uses `rcpx.DefaultCooldownDuration` (30s).
 * Negative values for `FailAfterConsecutive` or `Duration` are invalid and cause `NewRoundTripper` to return an error.
 
+Cooldown is time-based. When the cooldown duration expires, the upstream becomes eligible again; rcpx does not perform a health check before reusing it. Cooldown does not prove that an upstream is fresh, synced, at a particular block height, or returning correct JSON-RPC data.
+
 When all upstreams are cooling down, requests fail with `*rcpx.AllUpstreamsFailedError` where `Attempted == 0`. (Its `Unwrap()` reports `rcpx.ErrNoEligibleUpstreams`.)
 
 ### Non-idempotent safety rail
@@ -319,12 +383,35 @@ Current non-idempotent method list (built-in):
 * `eth_sendTransaction`
 * `eth_sendRawTransaction`
 
+The built-in non-idempotent method list is not currently configurable.
+
 Batch requests are treated conservatively:
 
 * If any item in the batch is unknown or unparseable for method extraction, the whole batch is treated as non-idempotent.
 * If method extraction fails (`ok == false`), rcpx treats the request as non-idempotent.
 
 If you set `AllowNonIdempotent` to true, rcpx can fail over even for these methods. This can duplicate side effects. Use with care.
+
+## Ethereum provider consistency caveats
+
+rcpx fails over individual HTTP requests. It does not know when several separate RPC calls are part of one larger application operation.
+
+If failover happens between separate calls, the application may observe data from different providers, different block heights, different chain heads, different pending states, or different mempool views.
+
+A single JSON-RPC batch HTTP request is not split across providers. The whole HTTP request is sent to one upstream per attempt. If that attempt fails in a retryable way, the whole batch may be retried on another upstream.
+
+Be careful with workflows involving:
+
+* multiple related `eth_call` requests;
+* `eth_getTransactionCount` with the `pending` tag;
+* transaction submission followed by transaction lookup;
+* nonce management;
+* pending transaction tracking;
+* read-after-write assumptions.
+
+For state-sensitive workflows, prefer pinning the whole logical operation to one provider where possible, and use explicit block numbers or block hashes when the RPC method supports them.
+
+rcpx can improve availability when an upstream fails at the HTTP transport/status level. It does not guarantee Ethereum state consistency across providers.
 
 ## Performance and keep-alives
 
@@ -438,20 +525,23 @@ All examples are runnable under `examples/goethereum/` and use rcpx as the HTTP 
 ### `examples/goethereum/basic-failover`
 
 * Shows: Basic wiring: build an rcpx `http.RoundTripper`, plug it into an `http.Client`, and pass that client to `rpc.DialOptions` via `rpc.WithHTTPClient`.
-* Calls: `ChainID` and `BlockNumber`.
+* Calls: Read-only methods: `ChainID` and `BlockNumber`.
 * Env: Uses `RCPX_UPSTREAMS` (comma-separated) and requires at least 2 URLs.
+* Expected behavior: If the first upstream fails in a retryable way, rcpx tries the next eligible upstream.
 
 ### `examples/goethereum/cooldown`
 
 * Shows: Cooldown behavior.
 * Setup: Wraps the base transport to log each attempted URL and count hits per upstream; configures `CooldownConfig` with `FailAfterConsecutive=1` and `Duration=30s`.
 * Env: Uses `RCPX_UPSTREAMS`.
+* Expected behavior: For the clearest demo, set the first upstream to an unreachable URL and the second to a working RPC URL. After the first upstream fails and rcpx fails over, later requests should skip the first upstream while it is cooling down.
 
 ### `examples/goethereum/non-idempotent-default-block`
 
 * Shows: The default non-idempotent safety rail.
 * Setup: Uses intentionally failing upstreams (closed local ports) to trigger a retryable failure, then calls `eth_sendRawTransaction`.
 * Expected: `*rcpx.NonIdempotentBlockedError` (checked via `errors.As`).
+* Note: The closed local ports are intentional so the example does not submit a transaction to a real provider.
 
 ### `examples/goethereum/non-idempotent-allow`
 
@@ -462,6 +552,7 @@ All examples are runnable under `examples/goethereum/` and use rcpx as the HTTP 
 ### `examples/goethereum/error-inspection`
 
 * Shows: `errors.As` and `errors.Is` for `*rcpx.AllUpstreamsFailedError` and `*rcpx.NonIdempotentBlockedError`.
+* Expected behavior: Demonstrates how to distinguish exhausted upstream attempts from failover blocked by the non-idempotent safety rail.
 
 ## License
 
