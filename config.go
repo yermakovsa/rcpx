@@ -33,6 +33,10 @@ type Config struct {
 
 	// Retry/failover policy hook. If nil, the default policy is used.
 	RetryPolicy RetryPolicy
+
+	// AdditionalRetryableStatusCodes are HTTP status codes retried in addition to
+	// the defaults: 429, 502, 503, and 504.
+	AdditionalRetryableStatusCodes []int
 }
 
 // CooldownConfig configures cooldown behavior.
@@ -68,6 +72,8 @@ type resolvedConfig struct {
 	allowNI   bool
 	bodyCap   int
 	policy    RetryPolicy
+
+	retryableStatuses map[int]struct{}
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
@@ -120,6 +126,11 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		policy = defaultRetryPolicy
 	}
 
+	statuses, err := resolveRetryableStatusCodes(cfg.AdditionalRetryableStatusCodes)
+	if err != nil {
+		return resolvedConfig{}, err
+	}
+
 	return resolvedConfig{
 		upstreams: upstreams,
 		base:      base,
@@ -127,6 +138,8 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		allowNI:   cfg.AllowNonIdempotent,
 		bodyCap:   bodyCap,
 		policy:    policy,
+
+		retryableStatuses: statuses,
 	}, nil
 }
 
@@ -165,4 +178,26 @@ func resolveCooldown(cc *CooldownConfig) (effectiveCooldown, error) {
 		failAfter: failAfter,
 		duration:  dur,
 	}, nil
+}
+
+func resolveRetryableStatusCodes(additional []int) (map[int]struct{}, error) {
+	statuses := map[int]struct{}{
+		429: {},
+		502: {},
+		503: {},
+		504: {},
+	}
+
+	for i, code := range additional {
+		if !validHTTPStatusCode(code) {
+			return nil, fmt.Errorf("rcpx: invalid AdditionalRetryableStatusCodes[%d] %d", i, code)
+		}
+		statuses[code] = struct{}{}
+	}
+
+	return statuses, nil
+}
+
+func validHTTPStatusCode(code int) bool {
+	return code >= 100 && code <= 999
 }

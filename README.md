@@ -9,7 +9,7 @@ Configure an `http.Client` to use rcpx as its transport. For each request, rcpx 
 * Tries upstreams sequentially, in priority order.
 * Tries each eligible upstream at most once per request.
 * By default, continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
-* Treats HTTP statuses other than `429`, `502`, `503`, `504` as success and returns them unchanged, even if non-2xx.
+* By default, treats HTTP statuses other than `429`, `502`, `503`, `504` as success and returns them unchanged, even if non-2xx.
 * Does not inspect JSON-RPC response bodies; HTTP `200` with a JSON-RPC error body is returned unchanged.
 * If the request context is canceled or deadline exceeded, returns immediately and does not consult the retry policy.
 * Buffers the request body once per request so it can resend it across upstreams, capped by `BodyBufferBytes`.
@@ -211,6 +211,7 @@ Default behavior summary:
 | Setting | Default |
 |---|---|
 | Retryable HTTP statuses | `429`, `502`, `503`, `504` |
+| Additional retryable HTTP statuses | None |
 | Body buffer cap | `rcpx.DefaultBodyBufferBytes` (`1 MiB`) |
 | Cooldown | Enabled |
 | Cooldown threshold | `rcpx.DefaultCooldownFailAfterConsecutive` (`3`) consecutive failover-causing failures |
@@ -223,7 +224,7 @@ Default behavior summary:
 * Upstreams are tried sequentially, in priority order.
 * Each eligible upstream is tried at most once per request.
 * By default, rcpx continues to the next upstream on any transport error, or on HTTP status `429`, `502`, `503`, `504`.
-* An attempt succeeds when `err == nil` and the status code is not `429`, `502`, `503`, or `504`.
+* An attempt succeeds when `err == nil` and the status code is not retryable.
 * Other HTTP status codes are treated as success from rcpx's perspective and returned unchanged.
 * JSON-RPC response bodies are not inspected. A JSON-RPC error returned with HTTP `200` is returned unchanged.
 * If the request context is canceled or deadline exceeded, rcpx returns immediately and does not consult the retry policy.
@@ -274,6 +275,21 @@ rcpx handles misbehaving base transports defensively:
 * It will not return `(nil, nil)` from `RoundTrip`; if that happens, rcpx returns an error.
 * If a base transport returns both `resp != nil` and `err != nil`, rcpx closes `resp.Body` and treats it as an error to avoid leaks.
 
+### Additional retryable HTTP statuses
+
+```go
+type Config struct {
+	AdditionalRetryableStatusCodes []int
+	// ...
+}
+```
+
+`AdditionalRetryableStatusCodes` adds status codes to the built-in retryable set: `429`, `502`, `503`, and `504`.
+
+For example, `[]int{500}` makes HTTP `500` retryable in addition to the defaults. Duplicates are ignored, and values must be three-digit HTTP status codes.
+
+Retryable status classification happens before `RetryPolicy` is called.
+
 ### Retry policy
 
 ```go
@@ -289,9 +305,9 @@ You can override the default retry or failover behavior with `Config.RetryPolicy
 * JSON-RPC info (best-effort): `Method`, `Batch`
 * `StatusCode` (0 if no HTTP response was obtained)
 * `Err` (the error from the base transport, if any)
-* `RetryableByDefault` (rcpx's default classification for this outcome)
+* `RetryableByDefault` (whether rcpx classifies the outcome as retryable)
 
-`RetryableByDefault` is true for transport errors (`Err != nil`) and for HTTP status `429`, `502`, `503`, `504`.
+`RetryableByDefault` is true for transport errors (`Err != nil`), for HTTP status `429`, `502`, `503`, `504`, and for statuses configured with `AdditionalRetryableStatusCodes`.
 
 The retry policy is only consulted after rcpx has classified an attempt as non-success and there is another eligible upstream to try.
 
@@ -301,7 +317,7 @@ The retry policy is not called:
 * for the last eligible upstream;
 * when the request context is canceled or its deadline is exceeded.
 
-Because HTTP statuses other than `429`, `502`, `503`, and `504` are treated as success from rcpx's perspective, `RetryPolicy` cannot make additional HTTP status codes, such as `500`, retryable under the current design.
+`RetryPolicy` cannot make a non-retryable HTTP status retryable by itself, because the policy is only called after rcpx has already classified an attempt as non-success. To make an additional HTTP status such as `500` retryable, configure `AdditionalRetryableStatusCodes`.
 
 `RetryPolicy` receives `AttemptOutcome`; it cannot inspect response bodies or response headers. It can decide whether rcpx should continue after an already-classified non-success attempt, but it is not a general response validation hook.
 

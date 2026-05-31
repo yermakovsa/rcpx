@@ -84,6 +84,50 @@ func TestNewRoundTripper_validation(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("invalid additional retryable status codes", func(t *testing.T) {
+		tests := []struct {
+			name string
+			code int
+		}{
+			{name: "negative", code: -1},
+			{name: "zero", code: 0},
+			{name: "below three digits", code: 99},
+			{name: "above three digits", code: 1000},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := NewRoundTripper(Config{
+					Upstreams:                      []string{upstream},
+					AdditionalRetryableStatusCodes: []int{tt.code},
+				})
+				if err == nil {
+					t.Fatalf("expected error for status code %d, got nil", tt.code)
+				}
+			})
+		}
+	})
+
+	t.Run("valid additional retryable status code is accepted", func(t *testing.T) {
+		_, err := NewRoundTripper(Config{
+			Upstreams:                      []string{upstream},
+			AdditionalRetryableStatusCodes: []int{500},
+		})
+		if err != nil {
+			t.Fatalf("expected valid status code to be accepted, got %v", err)
+		}
+	})
+
+	t.Run("duplicate additional retryable status codes are accepted", func(t *testing.T) {
+		_, err := NewRoundTripper(Config{
+			Upstreams:                      []string{upstream},
+			AdditionalRetryableStatusCodes: []int{500, 500},
+		})
+		if err != nil {
+			t.Fatalf("expected duplicate status codes to be accepted, got %v", err)
+		}
+	})
 }
 
 func TestNewRoundTripper_defaults(t *testing.T) {
