@@ -25,14 +25,14 @@ type AttemptOutcome struct {
 	StatusCode int
 	Err        error
 
-	RetryableByDefault bool // rcpx's default classification for this outcome
+	RetryableByDefault bool // whether rcpx classifies this outcome as retryable
 }
 
 func defaultRetryPolicy(out AttemptOutcome) bool {
 	return out.RetryableByDefault
 }
 
-func isRetryableStatus(code int) bool {
+func isBuiltInRetryableStatus(code int) bool {
 	switch code {
 	case 429, 502, 503, 504:
 		return true
@@ -41,19 +41,28 @@ func isRetryableStatus(code int) bool {
 	}
 }
 
-func isAttemptSuccess(statusCode int, err error) bool {
-	return err == nil && !isRetryableStatus(statusCode)
+func (cfg resolvedConfig) isRetryableStatus(code int) bool {
+	if cfg.retryableStatuses == nil {
+		return isBuiltInRetryableStatus(code)
+	}
+
+	_, ok := cfg.retryableStatuses[code]
+	return ok
 }
 
-func defaultRetryableByOutcome(statusCode int, err error) bool {
+func (cfg resolvedConfig) isAttemptSuccess(statusCode int, err error) bool {
+	return err == nil && !cfg.isRetryableStatus(statusCode)
+}
+
+func (cfg resolvedConfig) retryableByOutcome(statusCode int, err error) bool {
 	if err != nil {
 		return true
 	}
-	return isRetryableStatus(statusCode)
+	return cfg.isRetryableStatus(statusCode)
 }
 
 // statusCode should be 0 when no HTTP response was obtained.
-func buildAttemptOutcome(attempt int, upstream, method string, batch bool, statusCode int, err error) AttemptOutcome {
+func (cfg resolvedConfig) buildAttemptOutcome(attempt int, upstream, method string, batch bool, statusCode int, err error) AttemptOutcome {
 	return AttemptOutcome{
 		Attempt:            attempt,
 		Upstream:           upstream,
@@ -61,7 +70,7 @@ func buildAttemptOutcome(attempt int, upstream, method string, batch bool, statu
 		Batch:              batch,
 		StatusCode:         statusCode,
 		Err:                err,
-		RetryableByDefault: defaultRetryableByOutcome(statusCode, err),
+		RetryableByDefault: cfg.retryableByOutcome(statusCode, err),
 	}
 }
 

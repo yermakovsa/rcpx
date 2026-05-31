@@ -47,6 +47,103 @@ func TestRoundTrip_HTTP500_IsTreatedAsSuccess_NoFailover(t *testing.T) {
 	assertCalls(t, base, u1)
 }
 
+func TestRoundTrip_AdditionalRetryableStatus_FailsOver(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	respBody := newTrackingBody("internal error")
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: &http.Response{StatusCode: 500, Body: respBody}, err: nil},
+			},
+			u2: {
+				{resp: httpResp(200, "ok"), err: nil},
+			},
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AdditionalRetryableStatusCodes: []int{500},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp := mustRoundTrip(t, rt, req)
+	assertStatus(t, resp, 200)
+	if !respBody.Closed() {
+		t.Fatalf("expected 500 response body to be closed before failover")
+	}
+	assertCalls(t, base, u1, u2)
+}
+
+func TestRoundTrip_AdditionalRetryableStatus_DoesNotReplaceDefaults(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	respBody := newTrackingBody("service unavailable")
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: &http.Response{StatusCode: 503, Body: respBody}, err: nil},
+			},
+			u2: {
+				{resp: httpResp(200, "ok"), err: nil},
+			},
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AdditionalRetryableStatusCodes: []int{500},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp := mustRoundTrip(t, rt, req)
+	assertStatus(t, resp, 200)
+	if !respBody.Closed() {
+		t.Fatalf("expected 503 response body to be closed before failover")
+	}
+	assertCalls(t, base, u1, u2)
+}
+
+func TestRoundTrip_NonConfiguredStatus_IsTreatedAsSuccess_NoFailover(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	respBody := newTrackingBody("not implemented")
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: &http.Response{StatusCode: 501, Body: respBody}, err: nil},
+			},
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AdditionalRetryableStatusCodes: []int{500},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned error: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	assertStatus(t, resp, 501)
+
+	if respBody.Closed() {
+		t.Fatalf("expected returned response body to remain open")
+	}
+
+	assertCalls(t, base, u1)
+}
+
 func TestRoundTrip_HTTP200_WithJSONRPCErrorPayload_IsTreatedAsSuccess_NoFailover(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"

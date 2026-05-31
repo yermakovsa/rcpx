@@ -146,10 +146,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			status = resp.StatusCode
 		}
 
-		// Success = err==nil and status is not one of retryable statuses.
+		// Success = err==nil and status is not retryable.
 		// Non-retryable HTTP statuses are treated as "success" from rcpx's
 		// perspective and returned unchanged.
-		if isAttemptSuccess(status, rerr) {
+		if t.cfg.isAttemptSuccess(status, rerr) {
 			if t.cooldown != nil {
 				t.cooldown.recordSuccess(idx)
 			}
@@ -162,7 +162,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			cause = &httpStatusError{code: status, upstream: up.raw}
 		}
 
-		out := buildAttemptOutcome(attemptNo, up.raw, method, batch, status, rerr)
+		out := t.cfg.buildAttemptOutcome(attemptNo, up.raw, method, batch, status, rerr)
 
 		hasNext := pos < len(eligible)-1
 		continueToNext := false
