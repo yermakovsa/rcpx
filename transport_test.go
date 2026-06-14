@@ -578,6 +578,113 @@ func TestRoundTrip_NonIdempotentAllowed_FailoverSucceeds(t *testing.T) {
 	assertCalls(t, base, u1, u2)
 }
 
+func TestRoundTrip_AdditionalNonIdempotentMethod_BlockedByDefault(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: nil, err: io.EOF}},
+			u2: {{resp: httpResp(200, "ok")}}, // should not be called when blocked
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AdditionalNonIdempotentMethods: []string{"custom_send"},
+	})
+
+	req := newRPCRequest(t, u1, "custom_send")
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+
+	var be *NonIdempotentBlockedError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected NonIdempotentBlockedError, got %v", err)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected underlying cause io.EOF, got %v", err)
+	}
+	if be.Outcome.Method != "custom_send" {
+		t.Fatalf("expected blocked method custom_send, got %q", be.Outcome.Method)
+	}
+
+	assertCalls(t, base, u1)
+}
+
+func TestRoundTrip_AdditionalNonIdempotentMethod_AllowNonIdempotentFailsOver(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: nil, err: io.EOF}},
+			u2: {{resp: httpResp(200, "ok")}},
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AllowNonIdempotent:             true,
+		AdditionalNonIdempotentMethods: []string{"custom_send"},
+	})
+
+	req := newRPCRequest(t, u1, "custom_send")
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip error: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	assertStatus(t, resp, 200)
+	assertCalls(t, base, u1, u2)
+}
+
+func TestRoundTrip_BatchWithAdditionalNonIdempotentMethod_BlockedByDefault(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: nil, err: io.EOF}},
+			u2: {{resp: httpResp(200, "ok")}}, // should not be called when blocked
+		},
+	}
+
+	rt := mustNewTransport(t, Config{
+		Upstreams:                      []string{u1, u2},
+		Base:                           base,
+		AdditionalNonIdempotentMethods: []string{"custom_send"},
+	})
+
+	req := newJSONRequest(t, u1, `[
+		{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
+		{"jsonrpc":"2.0","id":2,"method":"custom_send","params":[]}
+	]`)
+
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+
+	var be *NonIdempotentBlockedError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected NonIdempotentBlockedError, got %v", err)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected underlying cause io.EOF, got %v", err)
+	}
+	if !be.Outcome.Batch {
+		t.Fatalf("expected batch outcome")
+	}
+
+	assertCalls(t, base, u1)
+}
+
 func TestRoundTrip_ContextDoneBeforeCall_BaseNotCalled(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 

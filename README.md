@@ -217,6 +217,7 @@ Default behavior summary:
 | Cooldown threshold | `rcpx.DefaultCooldownFailAfterConsecutive` (`3`) consecutive failover-causing failures |
 | Cooldown duration | `rcpx.DefaultCooldownDuration` (`30s`) |
 | Non-idempotent failover | Disabled |
+| Additional non-idempotent methods | None |
 | Base transport | `http.DefaultTransport` |
 
 ### How failover works
@@ -384,7 +385,8 @@ When all upstreams are cooling down, requests fail with `*rcpx.AllUpstreamsFaile
 
 ```go
 type Config struct {
-	AllowNonIdempotent bool
+	AllowNonIdempotent             bool
+	AdditionalNonIdempotentMethods []string
 	// ...
 }
 ```
@@ -399,7 +401,9 @@ Current non-idempotent method list (built-in):
 * `eth_sendTransaction`
 * `eth_sendRawTransaction`
 
-The built-in non-idempotent method list is not currently configurable.
+`AdditionalNonIdempotentMethods` adds exact JSON-RPC method names to the built-in non-idempotent set. The built-in methods cannot be removed. Duplicate names are ignored, and empty names are invalid.
+
+`AllowNonIdempotent` applies to both built-in and configured methods.
 
 Batch requests are treated conservatively:
 

@@ -128,6 +128,38 @@ func TestNewRoundTripper_validation(t *testing.T) {
 			t.Fatalf("expected duplicate status codes to be accepted, got %v", err)
 		}
 	})
+
+	t.Run("invalid additional non idempotent methods", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			method string
+		}{
+			{name: "empty", method: ""},
+			{name: "whitespace only", method: " \t\n"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := NewRoundTripper(Config{
+					Upstreams:                      []string{upstream},
+					AdditionalNonIdempotentMethods: []string{tt.method},
+				})
+				if err == nil {
+					t.Fatalf("expected error for method %q, got nil", tt.method)
+				}
+			})
+		}
+	})
+
+	t.Run("duplicate additional non idempotent methods are accepted", func(t *testing.T) {
+		_, err := NewRoundTripper(Config{
+			Upstreams:                      []string{upstream},
+			AdditionalNonIdempotentMethods: []string{"custom_send", "custom_send"},
+		})
+		if err != nil {
+			t.Fatalf("expected duplicate methods to be accepted, got %v", err)
+		}
+	})
 }
 
 func TestNewRoundTripper_defaults(t *testing.T) {

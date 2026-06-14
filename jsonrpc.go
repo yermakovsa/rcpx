@@ -5,18 +5,13 @@ import (
 	"encoding/json"
 )
 
-var nonIdempotentMethods = map[string]struct{}{
-	"eth_sendTransaction":    {},
-	"eth_sendRawTransaction": {},
-}
-
 // parseJSONRPCMethod best-effort extracts method info from a JSON-RPC request
 // body (single object or batch array).
 //
 // Safety rail: if any part of a batch is unknown/unparseable for method
 // extraction, the batch is treated as non-idempotent. If ok is false, callers
 // must treat the request as non-idempotent.
-func parseJSONRPCMethod(body []byte) (method string, batch bool, nonIdempotent bool, ok bool) {
+func parseJSONRPCMethod(body []byte, nonIdempotentMethods map[string]struct{}) (method string, batch bool, nonIdempotent bool, ok bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return "", false, false, false
