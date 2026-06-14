@@ -105,7 +105,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	// Best-effort method parsing; parse failure => treat as non-idempotent.
-	method, batch, nonIdempotent, ok := parseJSONRPCMethod(body)
+	method, batch, nonIdempotent, ok := parseJSONRPCMethod(body, t.cfg.nonIdempotentMethods)
 	if !ok {
 		nonIdempotent = true
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,10 @@ type Config struct {
 	// AdditionalRetryableStatusCodes are HTTP status codes retried in addition to
 	// the defaults: 429, 502, 503, and 504.
 	AdditionalRetryableStatusCodes []int
+
+	// AdditionalNonIdempotentMethods are JSON-RPC method names treated as
+	// non-idempotent in addition to the built-ins.
+	AdditionalNonIdempotentMethods []string
 }
 
 // CooldownConfig configures cooldown behavior.
@@ -73,7 +78,8 @@ type resolvedConfig struct {
 	bodyCap   int
 	policy    RetryPolicy
 
-	retryableStatuses map[int]struct{}
+	retryableStatuses    map[int]struct{}
+	nonIdempotentMethods map[string]struct{}
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
@@ -131,6 +137,11 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		return resolvedConfig{}, err
 	}
 
+	nonIdempotentMethods, err := resolveNonIdempotentMethods(cfg.AdditionalNonIdempotentMethods)
+	if err != nil {
+		return resolvedConfig{}, err
+	}
+
 	return resolvedConfig{
 		upstreams: upstreams,
 		base:      base,
@@ -139,7 +150,8 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		bodyCap:   bodyCap,
 		policy:    policy,
 
-		retryableStatuses: statuses,
+		retryableStatuses:    statuses,
+		nonIdempotentMethods: nonIdempotentMethods,
 	}, nil
 }
 
@@ -200,4 +212,21 @@ func resolveRetryableStatusCodes(additional []int) (map[int]struct{}, error) {
 
 func validHTTPStatusCode(code int) bool {
 	return code >= 100 && code <= 999
+}
+
+func resolveNonIdempotentMethods(additional []string) (map[string]struct{}, error) {
+	methods := map[string]struct{}{
+		"eth_sendTransaction":    {},
+		"eth_sendRawTransaction": {},
+	}
+
+	for i, method := range additional {
+		if strings.TrimSpace(method) == "" {
+			return nil, fmt.Errorf("rcpx: invalid AdditionalNonIdempotentMethods[%d]: empty method name", i)
+		}
+
+		methods[method] = struct{}{}
+	}
+
+	return methods, nil
 }
