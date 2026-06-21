@@ -42,6 +42,36 @@ type Config struct {
 	// AdditionalNonIdempotentMethods are JSON-RPC method names treated as
 	// non-idempotent in addition to the built-ins.
 	AdditionalNonIdempotentMethods []string
+
+	// OnAttempt, if non-nil, is called after each upstream attempt with basic
+	// attempt outcome information. The callback is called synchronously.
+	OnAttempt func(AttemptInfo)
+}
+
+// AttemptInfo describes one upstream attempt observed by Config.OnAttempt.
+type AttemptInfo struct {
+	// Attempt is the 1-based attempt number for the current request.
+	Attempt int
+
+	// Upstream is the configured upstream URL attempted.
+	//
+	// It is not redacted and may contain credentials if the configured URL
+	// contains them.
+	Upstream string
+
+	// Method and Batch describe the JSON-RPC request body, best-effort.
+	Method string
+	Batch  bool
+
+	// StatusCode is 0 when no HTTP response was obtained.
+	StatusCode int
+
+	// Err is the attempt failure cause, if any.
+	Err error
+
+	// Final reports whether rcpx will make no further upstream attempts for
+	// this request after this attempt.
+	Final bool
 }
 
 // CooldownConfig configures cooldown behavior.
@@ -76,7 +106,9 @@ type resolvedConfig struct {
 	cooldown  effectiveCooldown
 	allowNI   bool
 	bodyCap   int
+
 	policy    RetryPolicy
+	onAttempt func(AttemptInfo)
 
 	retryableStatuses    map[int]struct{}
 	nonIdempotentMethods map[string]struct{}
@@ -149,6 +181,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		allowNI:   cfg.AllowNonIdempotent,
 		bodyCap:   bodyCap,
 		policy:    policy,
+		onAttempt: cfg.OnAttempt,
 
 		retryableStatuses:    statuses,
 		nonIdempotentMethods: nonIdempotentMethods,

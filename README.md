@@ -322,6 +322,42 @@ The retry policy is not called:
 
 `RetryPolicy` receives `AttemptOutcome`; it cannot inspect response bodies or response headers. It can decide whether rcpx should continue after an already-classified non-success attempt, but it is not a general response validation hook.
 
+### Attempt observation
+
+```go
+type Config struct {
+	OnAttempt func(rcpx.AttemptInfo)
+	// ...
+}
+
+type AttemptInfo struct {
+	Attempt    int
+	Upstream   string
+	Method     string
+	Batch      bool
+	StatusCode int
+	Err        error
+	Final      bool
+}
+```
+
+`OnAttempt`, if set, is called once for each attempted upstream. It can be used for logging or metrics, including recording which upstream handled a successful request.
+
+`AttemptInfo` includes:
+
+* `Attempt` (1-based attempt number for the current request)
+* `Upstream` (the configured upstream URL attempted)
+* JSON-RPC info (best-effort): `Method`, `Batch`
+* `StatusCode` (0 if no HTTP response was obtained)
+* `Err` (the attempt failure cause, if any)
+* `Final` (whether rcpx will make no further upstream attempts for this request after this attempt)
+
+`Final` is true for the attempt that returns a successful response, and also for terminal failures such as the last eligible upstream failing, retry policy stopping failover, or the non-idempotent safety rail blocking failover.
+
+The callback is called synchronously. If it blocks, the request blocks.
+
+`Upstream` is the configured upstream string and is not redacted. It may contain credentials if your upstream URLs contain credentials.
+
 ### Request body buffering cap
 
 ```go

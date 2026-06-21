@@ -89,6 +89,22 @@ func (t *transport) eligibleUpstreams(now time.Time) (eligible []int, skippedCoo
 	return eligible, skippedCooldown
 }
 
+func (t *transport) notifyAttempt(attempt int, upstream, method string, batch bool, statusCode int, err error, final bool) {
+	if t.cfg.onAttempt == nil {
+		return
+	}
+
+	t.cfg.onAttempt(AttemptInfo{
+		Attempt:    attempt,
+		Upstream:   upstream,
+		Method:     method,
+		Batch:      batch,
+		StatusCode: statusCode,
+		Err:        err,
+		Final:      final,
+	})
+}
+
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, errors.New("rcpx: nil request")
@@ -134,7 +150,13 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// Cancellation rail: return immediately; policy is not called.
 		if isCanceledOrDeadline(ctx, rerr) || ctx.Err() != nil {
+			finalErr := rerr
+			if ctx.Err() != nil {
+				finalErr = ctx.Err()
+			}
 			closeResponseBody(resp)
+			t.notifyAttempt(attemptNo, up.raw, method, batch, 0, finalErr, true)
+
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -150,6 +172,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Non-retryable HTTP statuses are treated as "success" from rcpx's
 		// perspective and returned unchanged.
 		if t.cfg.isAttemptSuccess(status, rerr) {
+			t.notifyAttempt(attemptNo, up.raw, method, batch, status, nil, true)
 			if t.cooldown != nil {
 				t.cooldown.recordSuccess(idx)
 			}
@@ -174,6 +197,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Idempotency rail: non-idempotent requests never fail over unless allowed.
 		if nonIdempotent && !t.cfg.allowNI && continueToNext {
 			closeResponseBody(resp)
+			t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, true)
 			return nil, &NonIdempotentBlockedError{
 				Outcome: out,
 				Cause:   cause,
@@ -182,6 +206,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		if continueToNext {
 			closeResponseBody(resp)
+			t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, false)
 
 			if t.cooldown != nil {
 				t.cooldown.recordFailoverFailure(now, idx)
@@ -198,6 +223,8 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		closeResponseBody(resp)
+
+		t.notifyAttempt(attemptNo, up.raw, method, batch, status, cause, true)
 
 		failures = append(failures, AttemptFailure{
 			Upstream:   up.raw,
