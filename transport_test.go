@@ -498,6 +498,256 @@ func TestRoundTrip_PolicyCanStopFailoverOnRetryableStatus(t *testing.T) {
 	assertCalls(t, base, u1)
 }
 
+func TestRoundTrip_OnAttempt_SuccessFirstAttempt(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: httpResp(200, "ok"), err: nil}},
+		},
+	}
+
+	var attempts []AttemptInfo
+	rt := mustNewTransport(t, Config{
+		Upstreams: []string{u1},
+		Base:      base,
+		OnAttempt: func(info AttemptInfo) {
+			attempts = append(attempts, info)
+		},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp := mustRoundTrip(t, rt, req)
+	assertStatus(t, resp, 200)
+
+	if len(attempts) != 1 {
+		t.Fatalf("expected 1 attempt observation, got %d: %#v", len(attempts), attempts)
+	}
+
+	got := attempts[0]
+	if got.Attempt != 1 {
+		t.Fatalf("expected Attempt=1, got %d", got.Attempt)
+	}
+	if got.Upstream != u1 {
+		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
+	}
+	if got.Method != "eth_blockNumber" {
+		t.Fatalf("expected Method=eth_blockNumber, got %q", got.Method)
+	}
+	if got.Batch {
+		t.Fatalf("expected Batch=false")
+	}
+	if got.StatusCode != 200 {
+		t.Fatalf("expected StatusCode=200, got %d", got.StatusCode)
+	}
+	if got.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", got.Err)
+	}
+	if !got.Final {
+		t.Fatalf("expected Final=true")
+	}
+
+	assertCalls(t, base, u1)
+}
+
+func TestRoundTrip_OnAttempt_Failover(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	respBody := newTrackingBody("service unavailable")
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: &http.Response{StatusCode: 503, Body: respBody}, err: nil}},
+			u2: {{resp: httpResp(200, "ok"), err: nil}},
+		},
+	}
+
+	var attempts []AttemptInfo
+	rt := mustNewTransport(t, Config{
+		Upstreams: []string{u1, u2},
+		Base:      base,
+		OnAttempt: func(info AttemptInfo) {
+			attempts = append(attempts, info)
+		},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp := mustRoundTrip(t, rt, req)
+	assertStatus(t, resp, 200)
+
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 attempt observations, got %d: %#v", len(attempts), attempts)
+	}
+
+	first := attempts[0]
+	if first.Attempt != 1 {
+		t.Fatalf("expected first Attempt=1, got %d", first.Attempt)
+	}
+	if first.Upstream != u1 {
+		t.Fatalf("expected first Upstream=%q, got %q", u1, first.Upstream)
+	}
+	if first.Method != "eth_blockNumber" {
+		t.Fatalf("expected first Method=eth_blockNumber, got %q", first.Method)
+	}
+	if first.Batch {
+		t.Fatalf("expected first Batch=false")
+	}
+	if first.StatusCode != 503 {
+		t.Fatalf("expected first StatusCode=503, got %d", first.StatusCode)
+	}
+	if first.Err == nil {
+		t.Fatalf("expected first Err to be non nil")
+	}
+	if first.Final {
+		t.Fatalf("expected first Final=false")
+	}
+
+	second := attempts[1]
+	if second.Attempt != 2 {
+		t.Fatalf("expected second Attempt=2, got %d", second.Attempt)
+	}
+	if second.Upstream != u2 {
+		t.Fatalf("expected second Upstream=%q, got %q", u2, second.Upstream)
+	}
+	if second.Method != "eth_blockNumber" {
+		t.Fatalf("expected second Method=eth_blockNumber, got %q", second.Method)
+	}
+	if second.Batch {
+		t.Fatalf("expected second Batch=false")
+	}
+	if second.StatusCode != 200 {
+		t.Fatalf("expected second StatusCode=200, got %d", second.StatusCode)
+	}
+	if second.Err != nil {
+		t.Fatalf("expected second Err=nil, got %v", second.Err)
+	}
+	if !second.Final {
+		t.Fatalf("expected second Final=true")
+	}
+
+	if !respBody.Closed() {
+		t.Fatalf("expected 503 response body to be closed before failover")
+	}
+	assertCalls(t, base, u1, u2)
+}
+
+func TestRoundTrip_OnAttempt_PolicyStopsFailover(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	respBody := newTrackingBody("service unavailable")
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: &http.Response{StatusCode: 503, Body: respBody}, err: nil}},
+			u2: {{resp: httpResp(200, "ok"), err: nil}},
+		},
+	}
+
+	var attempts []AttemptInfo
+	pol, policy := newPolicyRecorder(false)
+	rt := mustNewTransport(t, Config{
+		Upstreams:   []string{u1, u2},
+		Base:        base,
+		RetryPolicy: policy,
+		OnAttempt: func(info AttemptInfo) {
+			attempts = append(attempts, info)
+		},
+	})
+
+	req := newRPCRequest(t, u1, "eth_blockNumber")
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+
+	ae := mustAsAllUpstreamsFailed(t, err)
+	if ae.Attempted != 1 {
+		t.Fatalf("expected Attempted=1, got %d", ae.Attempted)
+	}
+
+	if len(attempts) != 1 {
+		t.Fatalf("expected 1 attempt observation, got %d: %#v", len(attempts), attempts)
+	}
+
+	got := attempts[0]
+	if got.Attempt != 1 {
+		t.Fatalf("expected Attempt=1, got %d", got.Attempt)
+	}
+	if got.Upstream != u1 {
+		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
+	}
+	if got.StatusCode != 503 {
+		t.Fatalf("expected StatusCode=503, got %d", got.StatusCode)
+	}
+	if got.Err == nil {
+		t.Fatalf("expected Err to be non nil")
+	}
+	if !got.Final {
+		t.Fatalf("expected Final=true")
+	}
+
+	assertPolicyCalls(t, pol, 1)
+	if !respBody.Closed() {
+		t.Fatalf("expected 503 response body closed when not failing over")
+	}
+	assertCalls(t, base, u1)
+}
+
+func TestRoundTrip_OnAttempt_NonIdempotentBlocked(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {{resp: nil, err: io.EOF}},
+			u2: {{resp: httpResp(200, "ok"), err: nil}},
+		},
+	}
+
+	var attempts []AttemptInfo
+	rt := mustNewTransport(t, Config{
+		Upstreams: []string{u1, u2},
+		Base:      base,
+		OnAttempt: func(info AttemptInfo) {
+			attempts = append(attempts, info)
+		},
+	})
+
+	req := newRPCRequest(t, u1, "eth_sendRawTransaction")
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+
+	assertNonIdempotentBlocked(t, err, io.EOF)
+
+	if len(attempts) != 1 {
+		t.Fatalf("expected 1 attempt observation, got %d: %#v", len(attempts), attempts)
+	}
+
+	got := attempts[0]
+	if got.Attempt != 1 {
+		t.Fatalf("expected Attempt=1, got %d", got.Attempt)
+	}
+	if got.Upstream != u1 {
+		t.Fatalf("expected Upstream=%q, got %q", u1, got.Upstream)
+	}
+	if got.Method != "eth_sendRawTransaction" {
+		t.Fatalf("expected Method=eth_sendRawTransaction, got %q", got.Method)
+	}
+	if got.StatusCode != 0 {
+		t.Fatalf("expected StatusCode=0, got %d", got.StatusCode)
+	}
+	if !errors.Is(got.Err, io.EOF) {
+		t.Fatalf("expected Err to be io.EOF, got %v", got.Err)
+	}
+	if !got.Final {
+		t.Fatalf("expected Final=true")
+	}
+
+	assertCalls(t, base, u1)
+}
+
 func TestRoundTrip_NonIdempotentBlockedByDefault(t *testing.T) {
 	cases := []struct {
 		name string
