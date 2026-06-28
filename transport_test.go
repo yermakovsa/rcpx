@@ -1075,6 +1075,138 @@ func TestRoundTrip_CanceledByBaseWithResponse_ClosesBodyAndReturnsImmediately(t 
 	assertCalls(t, base, u1)
 }
 
+func TestRoundTrip_DeadlineExceededCountsForCooldownWhenEnabled(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: nil, err: context.DeadlineExceeded},
+			},
+			u2: {
+				{resp: httpResp(200, "ok"), err: nil},
+			},
+		},
+	}
+
+	tr := mustNewTransport(t, Config{
+		Upstreams: []string{u1, u2},
+		Base:      base,
+		Cooldown: &CooldownConfig{
+			FailAfterConsecutive:  1,
+			Duration:              time.Hour,
+			CountDeadlineExceeded: true,
+		},
+	})
+	fixedNow := time.Unix(400, 0)
+	tr.now = func() time.Time { return fixedNow }
+
+	req1 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp, err := tr.RoundTrip(req1)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// The expired request returns immediately. The next request skips u1 because
+	// the deadline counted toward cooldown.
+	req2 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp = mustRoundTrip(t, tr, req2)
+	assertStatus(t, resp, 200)
+
+	assertCalls(t, base, u1, u2)
+}
+
+func TestRoundTrip_DeadlineExceededDoesNotCountForCooldownByDefault(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: nil, err: context.DeadlineExceeded},
+				{resp: httpResp(200, "ok"), err: nil},
+			},
+			u2: {
+				{resp: httpResp(200, "unexpected"), err: nil},
+			},
+		},
+	}
+
+	tr := mustNewTransport(t, Config{
+		Upstreams: []string{u1, u2},
+		Base:      base,
+		Cooldown: &CooldownConfig{
+			FailAfterConsecutive: 1,
+			Duration:             time.Hour,
+		},
+	})
+	fixedNow := time.Unix(500, 0)
+	tr.now = func() time.Time { return fixedNow }
+
+	req1 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp, err := tr.RoundTrip(req1)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	req2 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp = mustRoundTrip(t, tr, req2)
+	assertStatus(t, resp, 200)
+
+	assertCalls(t, base, u1, u1)
+}
+
+func TestRoundTrip_CanceledDoesNotCountForCooldownWhenDeadlineCountingEnabled(t *testing.T) {
+	u1 := "https://u1.test/rpc"
+	u2 := "https://u2.test/rpc"
+
+	base := &scriptRT{
+		results: map[string][]rtResult{
+			u1: {
+				{resp: nil, err: context.Canceled},
+				{resp: httpResp(200, "ok"), err: nil},
+			},
+			u2: {
+				{resp: httpResp(200, "unexpected"), err: nil},
+			},
+		},
+	}
+
+	tr := mustNewTransport(t, Config{
+		Upstreams: []string{u1, u2},
+		Base:      base,
+		Cooldown: &CooldownConfig{
+			FailAfterConsecutive:  1,
+			Duration:              time.Hour,
+			CountDeadlineExceeded: true,
+		},
+	})
+	fixedNow := time.Unix(600, 0)
+	tr.now = func() time.Time { return fixedNow }
+
+	req1 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp, err := tr.RoundTrip(req1)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %#v", resp)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	req2 := newRPCRequest(t, u1, "eth_blockNumber")
+	resp = mustRoundTrip(t, tr, req2)
+	assertStatus(t, resp, 200)
+
+	assertCalls(t, base, u1, u1)
+}
+
 func TestCooldown_TripsAfterNConsecutiveFailoverFailures_SkipsCooledUpstream(t *testing.T) {
 	u1 := "https://u1.test/rpc"
 	u2 := "https://u2.test/rpc"

@@ -2,6 +2,7 @@ package rcpx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -153,6 +154,12 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			finalErr := rerr
 			if ctx.Err() != nil {
 				finalErr = ctx.Err()
+			}
+			if t.cooldown != nil &&
+				t.cfg.cooldown.countDeadlineExceeded &&
+				errors.Is(finalErr, context.DeadlineExceeded) &&
+				!errors.Is(finalErr, context.Canceled) {
+				t.cooldown.recordFailoverFailure(now, idx)
 			}
 			closeResponseBody(resp)
 			t.notifyAttempt(attemptNo, up.raw, method, batch, 0, finalErr, true)
