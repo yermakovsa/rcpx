@@ -85,6 +85,10 @@ type CooldownConfig struct {
 
 	// 0 => DefaultCooldownDuration (unless Disabled=true)
 	Duration time.Duration
+
+	// CountDeadlineExceeded records attempted context.DeadlineExceeded outcomes
+	// as cooldown failures. It does not affect context.Canceled.
+	CountDeadlineExceeded bool
 }
 
 // resolvedUpstream is the normalized form of a user-provided upstream string.
@@ -94,9 +98,10 @@ type resolvedUpstream struct {
 }
 
 type effectiveCooldown struct {
-	enabled   bool
-	failAfter int
-	duration  time.Duration
+	enabled               bool
+	failAfter             int
+	duration              time.Duration
+	countDeadlineExceeded bool
 }
 
 // resolvedConfig is the internal, fully-normalized configuration used at runtime.
@@ -219,9 +224,10 @@ func resolveCooldown(cc *CooldownConfig) (effectiveCooldown, error) {
 	}
 
 	return effectiveCooldown{
-		enabled:   true,
-		failAfter: failAfter,
-		duration:  dur,
+		enabled:               true,
+		failAfter:             failAfter,
+		duration:              dur,
+		countDeadlineExceeded: cc.CountDeadlineExceeded,
 	}, nil
 }
 

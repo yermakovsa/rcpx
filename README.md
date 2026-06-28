@@ -216,6 +216,7 @@ Default behavior summary:
 | Cooldown | Enabled |
 | Cooldown threshold | `rcpx.DefaultCooldownFailAfterConsecutive` (`3`) consecutive failover-causing failures |
 | Cooldown duration | `rcpx.DefaultCooldownDuration` (`30s`) |
+| Deadline-exceeded cooldown failures | Disabled |
 | Non-idempotent failover | Disabled |
 | Additional non-idempotent methods | None |
 | Base transport | `http.DefaultTransport` |
@@ -389,9 +390,10 @@ type Config struct {
 }
 
 type CooldownConfig struct {
-	Disabled             bool
-	FailAfterConsecutive int
-	Duration             time.Duration
+	Disabled              bool
+	FailAfterConsecutive  int
+	Duration              time.Duration
+	CountDeadlineExceeded bool
 }
 ```
 
@@ -403,6 +405,7 @@ Behavior:
 * Only failures that caused rcpx to continue to another upstream count toward the consecutive failure threshold.
 * Once an upstream hits the threshold, it is skipped for the configured duration.
 * A successful attempt on an upstream resets its cooldown counters.
+* If `CountDeadlineExceeded` is enabled, an attempted `context.DeadlineExceeded` also counts toward the threshold. The current request still returns immediately and does not fail over.
 
 Configuration:
 
@@ -411,6 +414,7 @@ Configuration:
 
   * `FailAfterConsecutive == 0` uses `rcpx.DefaultCooldownFailAfterConsecutive` (3).
   * `Duration == 0` uses `rcpx.DefaultCooldownDuration` (30s).
+  * `CountDeadlineExceeded` is disabled by default.
 * Negative values for `FailAfterConsecutive` or `Duration` are invalid and cause `NewRoundTripper` to return an error.
 
 Cooldown is time-based. When the cooldown duration expires, the upstream becomes eligible again; rcpx does not perform a health check before reusing it. Cooldown does not prove that an upstream is fresh, synced, at a particular block height, or returning correct JSON-RPC data.
@@ -566,7 +570,7 @@ if errors.As(err, &be) {
 
 ### Cancellation and deadlines
 
-If the request context is canceled or its deadline is exceeded, rcpx returns immediately. You can check for these conditions with `errors.Is`:
+If the request context is canceled or its deadline is exceeded, rcpx returns immediately and does not fail over within that request. With `CooldownConfig.CountDeadlineExceeded` enabled, an attempted `context.DeadlineExceeded` can count toward cooldown for future requests; `context.Canceled` does not count. You can check for these conditions with `errors.Is`:
 
 ```go
 if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

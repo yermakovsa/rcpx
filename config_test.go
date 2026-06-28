@@ -213,4 +213,25 @@ func TestNewRoundTripper_defaults(t *testing.T) {
 			t.Fatalf("expected bodyCap=%d, got %d", DefaultBodyBufferBytes, tr.cfg.bodyCap)
 		}
 	})
+
+	t.Run("cooldown deadline exceeded counting defaults disabled", func(t *testing.T) {
+		tr := newTransportTest(t, Config{Upstreams: []string{upstream}})
+
+		if tr.cfg.cooldown.countDeadlineExceeded {
+			t.Fatal("expected CountDeadlineExceeded to default false")
+		}
+	})
+
+	t.Run("cooldown deadline exceeded counting can be enabled", func(t *testing.T) {
+		tr := newTransportTest(t, Config{
+			Upstreams: []string{upstream},
+			Cooldown: &CooldownConfig{
+				CountDeadlineExceeded: true,
+			},
+		})
+
+		if !tr.cfg.cooldown.countDeadlineExceeded {
+			t.Fatal("expected CountDeadlineExceeded to resolve true")
+		}
+	})
 }
